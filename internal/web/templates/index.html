@@ -112,12 +112,31 @@
             </div>
         </div>
 
+        <div class="nav-bar chart-tabs" id="chartTabs" style="justify-content: center; margin-bottom: 1rem;">
+            <button class="view-button active" id="tabBreakdown">Breakdown</button>
+            <button class="view-button" id="tabTrends">Trends</button>
+        </div>
+
         <div class="chart-container">
             <div id="noDataMessage" class="no-data" style="display: none; width: 100%;">No expenses recorded this month.</div>
-            <div class="chart-box">
-                <canvas id="categoryPieChart"></canvas>
+
+            <div id="breakdownView" style="display: flex; width: 100%; gap: 1rem; align-items: center; width: 100%;">
+                <div class="chart-box">
+                    <canvas id="categoryPieChart"></canvas>
+                </div>
+                <div class="legend-box" id="customLegend">
+                </div>
             </div>
-            <div class="legend-box" id="customLegend">
+
+            <div id="trendsView" style="display: none; width: 100%; flex-direction: column; padding: 1rem;">
+                <div class="month-navigation" style="margin-bottom: 1rem;">
+                    <button id="prevTrendYear" class="nav-button"><i class="fa-solid fa-arrow-left"></i></button>
+                    <div class="current-month" id="currentTrendYearDisplay"></div>
+                    <button id="nextTrendYear" class="nav-button"><i class="fa-solid fa-arrow-right"></i></button>
+                </div>
+                <div style="position: relative; height: 340px; width: 100%;">
+                    <canvas id="trendChart"></canvas>
+                </div>
             </div>
         </div>
 
@@ -148,6 +167,147 @@
         let categoryColors = {};
         let allTags = new Set();
         let selectedTags = new Set();
+        let trendChart = null;
+        let currentTrendYear = new Date().getFullYear();
+
+        document.addEventListener('DOMContentLoaded', () => {
+            document.getElementById('currentTrendYearDisplay').textContent = currentTrendYear;
+        });
+
+        document.getElementById('prevTrendYear').addEventListener('click', () => {
+            currentTrendYear--;
+            document.getElementById('currentTrendYearDisplay').textContent = currentTrendYear;
+            updateTrendChart();
+        });
+
+        document.getElementById('nextTrendYear').addEventListener('click', () => {
+            currentTrendYear++;
+            document.getElementById('currentTrendYearDisplay').textContent = currentTrendYear;
+            updateTrendChart();
+        });
+
+        // Tab Switching Logic
+        document.getElementById('tabBreakdown').addEventListener('click', (e) => {
+            e.target.classList.add('active');
+            document.getElementById('tabTrends').classList.remove('active');
+            updateChartAndLegend()
+        });
+
+        document.getElementById('tabTrends').addEventListener('click', (e) => {
+            e.target.classList.add('active');
+            document.getElementById('tabBreakdown').classList.remove('active');
+            updateChartAndLegend()
+        });
+
+
+        // Generates a daily bar chart for the current month
+        function updateTrendChart() {
+            if (trendChart) trendChart.destroy();
+
+            // 1. Identify all unique expense categories across ALL time so the legend is always complete
+            const allExpenseCategories = [...new Set(allExpenses.filter(e => e.amount < 0).map(e => e.category))];
+
+            // Fallback if no expenses exist in the entire app yet
+            if (allExpenseCategories.length === 0) allExpenseCategories.push('Expenses');
+
+            // 2. Setup exactly 12 months for the X-axis
+            const labels = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+            // 3. Determine the max month to show data for (prevents lines dropping to 0 in the future)
+            const today = new Date();
+            let maxMonthIdx;
+            if (currentTrendYear < today.getFullYear()) {
+                maxMonthIdx = 11; // Past year: show all 12 months
+            } else if (currentTrendYear === today.getFullYear()) {
+                maxMonthIdx = today.getMonth(); // Current year: only show up to current month
+            } else {
+                maxMonthIdx = -1; // Future year: draw nothing
+            }
+
+            // 4. Initialize category data with 0s for valid months, and null for future months
+            const categoryData = {};
+            allExpenseCategories.forEach(cat => {
+                categoryData[cat] = new Array(12).fill(null);
+                for(let i = 0; i <= maxMonthIdx; i++) {
+                    categoryData[cat][i] = 0;
+                }
+            });
+
+            // 5. Populate data ONLY for the selected year
+            const expensesOnly = allExpenses.filter(exp => {
+                const date = new Date(exp.date);
+                return exp.amount < 0 && date.getFullYear() === currentTrendYear;
+            });
+
+            expensesOnly.forEach(exp => {
+                const cat = exp.category;
+                const date = new Date(exp.date);
+                const monthIdx = date.getMonth();
+
+                // Add amount if it falls within a valid month
+                if (monthIdx <= maxMonthIdx) {
+                    categoryData[cat][monthIdx] += Math.abs(exp.amount);
+                }
+            });
+
+            // 6. Build the Chart.js datasets
+            const datasets = allExpenseCategories.map(category => {
+                return {
+                    label: category,
+                    data: categoryData[category],
+                    borderColor: categoryColors[category] || '#b3b3b3',
+                    backgroundColor: categoryColors[category] || '#b3b3b3',
+                    borderWidth: 2,
+                    fill: false,
+                    tension: 0.3,
+                    pointRadius: 4,
+                    spanGaps: false // Ensures the line doesn't connect over missing future months
+                };
+            });
+
+            // 7. Render the Line Chart
+            const ctx = document.getElementById('trendChart').getContext('2d');
+            trendChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: datasets
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: {
+                        mode: 'index',
+                        intersect: false,
+                    },
+                    plugins: {
+                        legend: {
+                            display: true,
+                            position: 'bottom',
+                            labels: { color: '#b3b3b3', usePointStyle: true, padding: 20 }
+                        },
+                        tooltip: {
+                            // This sorts the items descending based on their raw value
+                            itemSort: (a, b) => b.raw - a.raw,
+                            callbacks: {
+                                label: (context) => `${context.dataset.label}: ${formatCurrency(context.raw)}`
+                            }
+                        }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            grid: { color: '#1a365d' },
+                            ticks: { color: '#b3b3b3' }
+                        },
+                        x: {
+                            grid: { color: '#1a365d'},
+                            ticks: { color: '#b3b3b3' }
+                        }
+                    }
+                }
+            });
+        }
 
         function assignCategoryColors(categories) {
             categories.forEach((category, index) => {
@@ -190,30 +350,44 @@
 
         function updateChartAndLegend() {
             const monthExpenses = getMonthExpenses(allExpenses);
-            const chartBox = document.querySelector('.chart-box');
-            const legendBox = document.getElementById('customLegend');
+            const breakdownView = document.getElementById('breakdownView');
+            const trendsView = document.getElementById('trendsView');
             const cashflowSection = document.getElementById('cashflow-section');
             const noDataMessage = document.getElementById('noDataMessage');
-            const hasExpenses = monthExpenses.some(e => e.amount < 0);
-            if (!hasExpenses) {
-                if (pieChart) {
-                    pieChart.destroy();
-                    pieChart = null;
-                }
-                chartBox.style.display = 'none';
-                legendBox.style.display = 'none';
-                cashflowSection.style.display = 'none';
-                noDataMessage.style.display = 'block';
-            } else {
-                chartBox.style.display = 'flex';
-                legendBox.style.display = 'flex';
-                cashflowSection.style.display = 'flex';
+            const chartTabs = document.getElementById('chartTabs');
+
+            // Always show the tabs if there is ANY data in the app
+            chartTabs.style.display = allExpenses.length > 0 ? 'flex' : 'none';
+
+            const isTrendsActive = document.getElementById('tabTrends').classList.contains('active');
+
+            if (isTrendsActive) {
+                // TRENDS VIEW IS ACTIVE
+                breakdownView.style.display = 'none';
                 noDataMessage.style.display = 'none';
-                
-                const categoryData = calculateCategoryBreakdown(monthExpenses);
-                updateCashflow(monthExpenses);
-                createPieChart(categoryData);
-                updateLegend(categoryData);
+                cashflowSection.style.display = 'none';
+                trendsView.style.display = 'flex';
+                updateTrendChart();
+            } else {
+                // BREAKDOWN VIEW IS ACTIVE
+                trendsView.style.display = 'none';
+                const hasMonthData = monthExpenses.some(e => e.amount < 0);
+
+                if (!hasMonthData) {
+                    if (pieChart) { pieChart.destroy(); pieChart = null; }
+                    breakdownView.style.display = 'none';
+                    cashflowSection.style.display = 'none';
+                    noDataMessage.style.display = 'block';
+                } else {
+                    noDataMessage.style.display = 'none';
+                    breakdownView.style.display = 'flex';
+                    cashflowSection.style.display = 'flex';
+
+                    const categoryData = calculateCategoryBreakdown(monthExpenses);
+                    updateCashflow(monthExpenses);
+                    createPieChart(categoryData);
+                    updateLegend(categoryData);
+                }
             }
         }
 
